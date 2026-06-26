@@ -1,12 +1,12 @@
 const axios = require('axios');
 
-const GEMINI_API_KEY = process.env.GEMINI_API_KEY || process.env.GOOGLE_API_KEY;
-const GEMINI_BASE = 'https://generativelanguage.googleapis.com/v1beta';
+const GEMINI_API_KEY = process.env.GEMINI_API_KEY;
+const GEMINI_BASE = 'https://generativelanguage.googleapis.com/v1beta2';
 const TEXT_MODEL = 'gemini-2.5-flash';
-const IMAGE_MODEL = 'gemini-2.0-flash-preview-image-generation';
+const IMAGE_MODEL = 'gemini-image-1.5';
 
 if (!GEMINI_API_KEY) {
-  console.warn('Warning: GEMINI_API_KEY (or GOOGLE_API_KEY) not set in .env');
+  console.warn('Warning: GEMINI_API_KEY not set in .env');
 }
 
 function getGeminiConfig() {
@@ -37,36 +37,29 @@ async function retryGemini(fn) {
   }
 }
 
-function buildContents(prompt) {
-  return {
-    contents: [
-      {
-        role: 'user',
-        parts: [{ text: prompt }]
-      }
-    ]
-  };
-}
-
 function parseTextResponse(data) {
   const candidate = data?.candidates?.[0];
-  const part = candidate?.content?.parts?.find((item) => typeof item.text === 'string');
-  if (part?.text) {
-    return part.text;
+  if (candidate) {
+    return candidate.content || candidate.output || '';
+  }
+
+  const output = data?.output?.[0];
+  if (output?.content?.[0]?.text) {
+    return output.content[0].text;
   }
 
   return data?.text || '';
 }
 
 async function classifyIntent(prompt) {
-  const url = `${GEMINI_BASE}/models/${TEXT_MODEL}:generateContent`;
+  const url = `${GEMINI_BASE}/models/${TEXT_MODEL}:generateText`;
   const body = {
-    ...buildContents(`Classify the following user request as exactly one word: image or text.\n\n${prompt}`),
-    generationConfig: {
-      temperature: 0,
-      maxOutputTokens: 5,
-      candidateCount: 1
-    }
+    prompt: {
+      text: `Classify the following user request as exactly one word: image or text.\n\n${prompt}`
+    },
+    temperature: 0,
+    maxOutputTokens: 5,
+    candidateCount: 1
   };
 
   const res = await retryGemini(() => axios.post(url, body, getGeminiConfig()));
@@ -76,18 +69,17 @@ async function classifyIntent(prompt) {
 }
 
 async function generateImage(prompt) {
-  const url = `${GEMINI_BASE}/models/${IMAGE_MODEL}:generateContent`;
+  const url = `${GEMINI_BASE}/images:generate`;
   const body = {
-    ...buildContents(prompt),
-    generationConfig: {
-      responseModalities: ['TEXT', 'IMAGE']
-    }
+    model: IMAGE_MODEL,
+    prompt,
+    imageCount: 1,
+    size: '1024x1024'
   };
 
   const res = await retryGemini(() => axios.post(url, body, getGeminiConfig()));
-  const candidate = res.data?.candidates?.[0];
-  const imagePart = candidate?.content?.parts?.find((part) => part.inlineData?.data);
-  const b64 = imagePart?.inlineData?.data;
+  const artifact = res.data?.artifacts?.[0] || res.data?.data?.[0];
+  const b64 = artifact?.image?.imageBytes || artifact?.imageBytes || artifact?.content || artifact?.b64_json;
   if (!b64) {
     throw new Error('Gemini image generation did not return base64 image bytes');
   }
@@ -95,14 +87,14 @@ async function generateImage(prompt) {
 }
 
 async function getTextAnswer(prompt) {
-  const url = `${GEMINI_BASE}/models/${TEXT_MODEL}:generateContent`;
+  const url = `${GEMINI_BASE}/models/${TEXT_MODEL}:generateText`;
   const body = {
-    ...buildContents(`Answer the following user prompt concisely:\n\n${prompt}`),
-    generationConfig: {
-      temperature: 0.3,
-      maxOutputTokens: 250,
-      candidateCount: 1
-    }
+    prompt: {
+      text: `Answer the following user prompt concisely:\n\n${prompt}`
+    },
+    temperature: 0.3,
+    maxOutputTokens: 250,
+    candidateCount: 1
   };
 
   const res = await retryGemini(() => axios.post(url, body, getGeminiConfig()));
